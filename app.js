@@ -1060,17 +1060,19 @@ function renderWardView(container) {
           ${renderOverrideBanner(notesList)}
         </div>
 
-        <div class="grid grid-cols-2 gap-3 text-left sm:text-right border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-100">
+        <div class="grid grid-cols-2 items-start gap-4 text-left sm:text-right border-t sm:border-t-0 pt-2.5 sm:pt-0 border-slate-100">
           <div>
             <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">HIGH COUNCIL</span>
             ${eff.hcOverridden ? `<span class="text-xs text-slate-400 line-through block">${escapeHTML(eff.origHC || 'None')}</span>` : ''}
             ${eff.hc ? renderEntityLink(eff.hc, 'highCouncil', canNavigateToHighCouncil(eff.hc) ? eff.hc : '', 'font-bold text-slate-900 text-sm') : '<span class="font-bold text-slate-900 text-sm block">None</span>'}
           </div>
           <div>
-            <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">COMPANION</span>
+            <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex flex-wrap items-center sm:justify-end gap-x-1">
+              <span>COMPANION</span>
+              ${eff.compRole && eff.compRole !== eff.compName ? `<span class="text-slate-300">·</span><span class="normal-case tracking-normal font-semibold text-slate-500">${escapeHTML(eff.compRole)}</span>` : ''}
+            </div>
             ${eff.compOverridden ? `<span class="text-xs text-slate-400 line-through block">${escapeHTML(eff.origCompName || 'None')}</span>` : ''}
             ${eff.compName ? renderEntityLink(eff.compName, 'companion', canNavigateToCompanionRole(eff.compRole) ? eff.compRole : '', 'font-bold text-slate-900 text-sm') : '<span class="font-bold text-slate-900 text-sm block">None</span>'}
-            ${eff.compRole && eff.compRole !== eff.compName ? `<span class="text-[11px] text-slate-500 font-medium block">(${escapeHTML(eff.compRole)})</span>` : ''}
           </div>
         </div>
       </div>
@@ -1143,17 +1145,19 @@ function renderMonthView(container) {
         ${renderOverrideBanner(notesList)}
       </div>
 
-      <div class="flex items-center gap-4 sm:text-right border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-100">
-        <div class="min-w-[120px]">
+      <div class="grid grid-cols-2 items-start gap-4 sm:flex sm:items-start sm:gap-6 sm:text-right border-t sm:border-t-0 pt-2.5 sm:pt-0 border-slate-100">
+        <div class="sm:min-w-[125px]">
           <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">HIGH COUNCIL</span>
           ${eff.hcOverridden ? `<span class="text-xs text-slate-400 line-through block">${escapeHTML(eff.origHC || 'None')}</span>` : ''}
           ${eff.hc ? renderEntityLink(eff.hc, 'highCouncil', canNavigateToHighCouncil(eff.hc) ? eff.hc : '', 'font-bold text-slate-900 text-sm') : '<span class="font-bold text-slate-900 text-sm block">Unassigned</span>'}
         </div>
-        <div class="min-w-[120px]">
-          <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">COMPANION</span>
+        <div class="sm:min-w-[140px]">
+          <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex flex-wrap items-center sm:justify-end gap-x-1">
+            <span>COMPANION</span>
+            ${eff.compRole && eff.compRole !== eff.compName ? `<span class="text-slate-300">·</span><span class="normal-case tracking-normal font-semibold text-slate-500">${escapeHTML(eff.compRole)}</span>` : ''}
+          </div>
           ${eff.compOverridden ? `<span class="text-xs text-slate-400 line-through block">${escapeHTML(eff.origCompName || 'None')}</span>` : ''}
           ${eff.compName ? renderEntityLink(eff.compName, 'companion', canNavigateToCompanionRole(eff.compRole) ? eff.compRole : '', 'font-bold text-slate-900 text-sm') : '<span class="font-bold text-slate-900 text-sm block">None</span>'}
-          ${eff.compRole && eff.compRole !== eff.compName ? `<span class="text-[10px] text-slate-500 font-medium block">(${escapeHTML(eff.compRole)})</span>` : ''}
         </div>
       </div>
     `;
