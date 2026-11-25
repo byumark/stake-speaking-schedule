@@ -272,23 +272,28 @@ function applyTabChrome(tabKey) {
   });
 
   const label = document.getElementById('dropdownLabel');
+  const togglesGroup = document.getElementById('togglesGroup');
   const offToggle = document.getElementById('offToggleContainer');
   const pastToggle = document.getElementById('pastToggleContainer');
 
   if (tabKey === 'highCouncil') {
     if (label) label.textContent = 'Select High Councilor';
+    if (togglesGroup) togglesGroup.classList.remove('hidden');
     if (offToggle) offToggle.classList.remove('hidden');
     if (pastToggle) pastToggle.classList.remove('hidden');
   } else if (tabKey === 'companion') {
     if (label) label.textContent = 'Select Companion Role / Leader';
+    if (togglesGroup) togglesGroup.classList.remove('hidden');
     if (offToggle) offToggle.classList.remove('hidden');
     if (pastToggle) pastToggle.classList.remove('hidden');
   } else if (tabKey === 'ward') {
     if (label) label.textContent = 'Select Ward / Branch';
+    if (togglesGroup) togglesGroup.classList.remove('hidden');
     if (offToggle) offToggle.classList.add('hidden');
     if (pastToggle) pastToggle.classList.remove('hidden');
   } else if (tabKey === 'month') {
     if (label) label.textContent = 'Select Month';
+    if (togglesGroup) togglesGroup.classList.add('hidden');
     if (offToggle) offToggle.classList.add('hidden');
     if (pastToggle) pastToggle.classList.add('hidden');
   }
@@ -1263,10 +1268,12 @@ function copyScheduleToClipboard() {
         }
 
         const ward = getWardInfo(assignedWard);
+        const theme = THEMES[m] ? THEMES[m].theme : '';
 
         lines.push(`${m}${isPast ? ' [Past]' : ''}: ${ward.name} (${ward.time || '10:00 AM'})${effective.compOverridden ? ` [Sub for ${effective.origCompName}]` : ''}`);
         lines.push(`  Building: ${ward.building} (${ward.address})`);
         lines.push(`  Speaking With: ${effective.hc || 'None'} (High Council)`);
+        if (theme) lines.push(`  Theme: "${theme}"`);
         lines.push('');
       });
     }
@@ -1371,6 +1378,13 @@ function showToast(msg) {
 }
 
 function openGuidelinesModal() {
+  const mingoTimeEl = document.getElementById('mingoTimeText');
+  if (mingoTimeEl && WARDS.length > 0) {
+    const mingo = WARDS.find(w => w.name.toLowerCase().includes('mingo'));
+    if (mingo && mingo.time) {
+      mingoTimeEl.textContent = mingo.time;
+    }
+  }
   document.getElementById('guidelinesModal').classList.remove('hidden');
 }
 function closeGuidelinesModal() {

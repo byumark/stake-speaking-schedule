@@ -1,9 +1,6 @@
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
-.pb-safe {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-}
 details.talks-drawer > summary {
   list-style: none;
 }
