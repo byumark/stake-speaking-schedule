@@ -28,10 +28,14 @@ let OVERRIDES = [];
 let isDataLoaded = false;
 
 // -------------------------------------------------------------
-// App State
+// App State, Persistence & URL Sync
 // -------------------------------------------------------------
+const STORAGE_KEY = 'stakeScheduleState_v1';
+const VALID_TABS = ['highCouncil', 'companion', 'ward', 'month'];
+
 let currentTab = 'highCouncil';
 let currentSelection = '';
+let savedSelections = { highCouncil: '', companion: '', ward: '', month: '' };
 let showPastMonths = false;
 let showOffMonths = false;
 
@@ -40,10 +44,84 @@ function getWardInfo(wardName) {
   return found || { name: wardName || 'Unknown Ward', building: '', address: '', time: '10:00 AM' };
 }
 
+function getCurrentMonthName() {
+  return MONTHS[new Date().getMonth()] || MONTHS[0];
+}
+
 function isMonthPast(monthName) {
   const idx = MONTHS.indexOf(monthName);
   if (idx === -1) return false;
   return idx < new Date().getMonth();
+}
+
+function isCurrentMonth(monthName) {
+  const idx = MONTHS.indexOf(monthName);
+  return idx !== -1 && idx === new Date().getMonth();
+}
+
+function loadSavedState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && VALID_TABS.includes(parsed.tab)) {
+        currentTab = parsed.tab;
+      }
+      if (parsed && parsed.selections && typeof parsed.selections === 'object') {
+        VALID_TABS.forEach(t => {
+          if (typeof parsed.selections[t] === 'string') {
+            savedSelections[t] = parsed.selections[t];
+          }
+        });
+      }
+      if (typeof parsed.showPastMonths === 'boolean') showPastMonths = parsed.showPastMonths;
+      if (typeof parsed.showOffMonths === 'boolean') showOffMonths = parsed.showOffMonths;
+    }
+  } catch (e) {
+    // Ignore storage errors in private browsing or restricted environments
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const urlTab = params.get('tab');
+    const urlSelect = params.get('select');
+    if (urlTab && VALID_TABS.includes(urlTab)) {
+      currentTab = urlTab;
+    }
+    if (urlSelect) {
+      savedSelections[currentTab] = urlSelect;
+    }
+  } catch (e) {
+    // Ignore URL parsing errors
+  }
+
+  currentSelection = savedSelections[currentTab] || '';
+}
+
+function syncUrlParams() {
+  if (!isDataLoaded || !currentSelection) return;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', currentTab);
+    url.searchParams.set('select', currentSelection);
+    window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+  } catch (e) {
+    // Ignore history API errors (e.g., file:// origin)
+  }
+}
+
+function saveState() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      tab: currentTab,
+      selections: savedSelections,
+      showPastMonths,
+      showOffMonths
+    }));
+  } catch (e) {
+    // Ignore storage quota/private mode errors
+  }
+  syncUrlParams();
 }
 
 // -------------------------------------------------------------
@@ -115,14 +193,12 @@ function renderOverrideBanner(notes = []) {
     </div>`;
 }
 
-function switchTab(tabKey) {
-  currentTab = tabKey;
-
-  ['highCouncil', 'companion', 'ward', 'month'].forEach(t => {
+function applyTabChrome(tabKey) {
+  VALID_TABS.forEach(t => {
     const btn = document.getElementById(`tab-${t}`);
     if (!btn) return;
     if (t === tabKey) {
-      btn.className = 'flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-1 sm:px-4 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-sm font-semibold transition-all duration-150 bg-indigo-50 text-indigo-700 sm:bg-white sm:text-slate-900 sm:shadow-xs';
+      btn.className = 'flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-1 sm:px-4 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-sm font-semibold transition-all duration-150 bg-indigo-50 text-indigo-700 sm:bg-white sm:text-slate-900 sm:shadow-sm';
     } else {
       btn.className = 'flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2 px-1 sm:px-4 py-1.5 sm:py-2 rounded-xl text-[11px] sm:text-sm font-medium transition-all duration-150 text-slate-500 hover:text-slate-900 sm:text-slate-600';
     }
@@ -149,16 +225,26 @@ function switchTab(tabKey) {
     if (offToggle) offToggle.classList.add('hidden');
     if (pastToggle) pastToggle.classList.add('hidden');
   }
+}
 
+function switchTab(tabKey, { fromUser = true } = {}) {
+  if (!VALID_TABS.includes(tabKey)) return;
+  currentTab = tabKey;
+  applyTabChrome(tabKey);
   populateDropdown();
   renderCards();
+  if (isDataLoaded) saveState();
+
+  if (fromUser && window.innerWidth < 640 && window.scrollY > 80) {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 }
 
 function populateDropdown() {
   const select = document.getElementById('itemSelect');
   if (!select) return;
 
-  const prevVal = currentSelection;
+  const preferredVal = savedSelections[currentTab] || '';
   select.innerHTML = '';
 
   if (currentTab === 'highCouncil') {
@@ -240,34 +326,50 @@ function populateDropdown() {
     MONTHS.forEach(m => {
       const opt = document.createElement('option');
       opt.value = m;
-      opt.textContent = m;
+      opt.textContent = isCurrentMonth(m) ? `${m} (This Month)` : m;
       select.appendChild(opt);
     });
   }
 
   const validValues = Array.from(select.options).map(o => o.value);
-  if (prevVal && validValues.includes(prevVal)) {
-    select.value = prevVal;
-    currentSelection = prevVal;
+  const matchedPreferred = preferredVal
+    ? validValues.find(v => v.toLowerCase() === preferredVal.toLowerCase())
+    : '';
+
+  if (matchedPreferred) {
+    select.value = matchedPreferred;
+    currentSelection = matchedPreferred;
+  } else if (currentTab === 'month' && validValues.includes(getCurrentMonthName())) {
+    const curMonth = getCurrentMonthName();
+    select.value = curMonth;
+    currentSelection = curMonth;
   } else if (select.options.length > 0) {
     select.value = select.options[0].value;
     currentSelection = select.options[0].value;
+  }
+
+  if (currentSelection) {
+    savedSelections[currentTab] = currentSelection;
   }
 }
 
 function onSelectionChange(val) {
   currentSelection = val;
+  savedSelections[currentTab] = val;
   renderCards();
+  saveState();
 }
 
 function toggleShowPastMonths(checked) {
   showPastMonths = checked;
   renderCards();
+  saveState();
 }
 
 function toggleShowOffMonths(checked) {
   showOffMonths = checked;
   renderCards();
+  saveState();
 }
 
 // -------------------------------------------------------------
@@ -311,18 +413,70 @@ function renderTalkLinks(talks, isDark = false) {
   return html;
 }
 
-function renderThemeDrawer(month) {
-  const themeData = THEMES[month] || { theme: '', talks: [] };
+const MAP_PIN_SVG = '<svg class="w-3.5 h-3.5 text-rose-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>';
+
+function renderMapLink(address, labelText = '') {
+  if (!address) return '';
+  const mapsUrl = `https://maps.google.com/?q=${encodeURIComponent(address)}`;
+  return `<a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" title="Open in Google Maps" class="hover:text-indigo-600 underline decoration-slate-300 hover:decoration-indigo-500 underline-offset-2 transition-colors">${escapeHTML(labelText || address)}</a>`;
+}
+
+function renderLocationLine(wardInfo, { includeBuilding = false } = {}) {
+  if (!wardInfo) return '';
+  if (!includeBuilding && !wardInfo.address) return '';
+  if (includeBuilding && !wardInfo.building && !wardInfo.address) return '';
+
+  const parts = [];
+  if (includeBuilding && wardInfo.building) {
+    parts.push(`<span class="font-medium text-slate-600">${escapeHTML(wardInfo.building)}</span>`);
+  }
+  if (wardInfo.address) {
+    parts.push(renderMapLink(wardInfo.address));
+  }
+
   return `
-    <div class="pt-3.5 border-t border-slate-100 space-y-2.5">
+    <div class="flex items-center gap-1.5 text-xs text-slate-500">
+      ${MAP_PIN_SVG}
+      <span class="min-w-0">${parts.join(' <span class="text-slate-300">•</span> ')}</span>
+    </div>`;
+}
+
+function getMonthCardClass(isPast, isCurrent, isRelieved = false) {
+  if (isPast) return 'rounded-2xl p-5 shadow-sm border transition-all opacity-65 bg-slate-50/70 border-dashed border-slate-300';
+  if (isCurrent) return 'bg-white rounded-2xl p-5 shadow-sm border border-indigo-300 ring-1 ring-indigo-100 transition-all';
+  if (isRelieved) return 'rounded-2xl p-5 shadow-sm border transition-all bg-slate-50/60 border-slate-200/80';
+  return 'bg-white rounded-2xl p-5 shadow-sm border border-slate-200/90 transition-all';
+}
+
+function renderCurrentBadge(isCurrent) {
+  if (!isCurrent) return '';
+  return '<span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold tracking-wider bg-indigo-600 text-white shadow-sm">THIS MONTH</span>';
+}
+
+function renderThemeDrawer(month, { defaultOpen = false } = {}) {
+  const themeData = THEMES[month] || { theme: '', talks: [] };
+  const talks = themeData.talks || [];
+
+  const talksSection = talks.length > 0
+    ? `
+      <details class="talks-drawer pt-0.5" ${defaultOpen ? 'open' : ''}>
+        <summary class="cursor-pointer inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-indigo-600 hover:text-indigo-800 select-none transition-colors">
+          <svg class="talks-chevron w-3.5 h-3.5 transition-transform duration-150" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+          <span>Conference Talks (${talks.length})</span>
+        </summary>
+        <div class="pt-2.5">
+          ${renderTalkLinks(talks, false)}
+        </div>
+      </details>`
+    : `<p class="text-xs text-slate-400 italic">Conference talks to be announced.</p>`;
+
+  return `
+    <div class="pt-3.5 border-t border-slate-100 space-y-2">
       <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs">
         <span class="font-bold uppercase tracking-wider text-slate-400 text-[10px]">STAKE THEME:</span>
         <span class="font-bold text-slate-900">${escapeHTML(themeData.theme || 'To be announced')}</span>
       </div>
-      <div class="space-y-1.5">
-        <div class="font-bold uppercase tracking-wider text-slate-400 text-[10px]">CONFERENCE TALKS:</div>
-        ${renderTalkLinks(themeData.talks, false)}
-      </div>
+      ${talksSection}
     </div>
   `;
 }
@@ -338,7 +492,7 @@ function renderCards() {
     container.innerHTML = `
       <div class="space-y-4">
         ${[1, 2, 3].map(() => `
-          <div class="bg-white rounded-2xl p-6 shadow-xs border border-slate-200/80 animate-pulse space-y-4">
+          <div class="bg-white rounded-2xl p-6 shadow-sm border border-slate-200/80 animate-pulse space-y-4">
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-3">
                 <div class="h-5 w-24 bg-slate-200 rounded-lg"></div>
@@ -384,6 +538,7 @@ function renderHighCouncilView(container) {
 
   MONTHS.forEach(month => {
     const isPast = isMonthPast(month);
+    const isCurrent = isCurrentMonth(month);
     if (isPast && !showPastMonths) return;
 
     // Find any ward where this HC is either the active speaker OR was the original speaker
@@ -411,16 +566,15 @@ function renderHighCouncilView(container) {
     const wardInfo = matchedWard ? getWardInfo(matchedWard) : null;
 
     const card = document.createElement('div');
-    card.className = `bg-white rounded-2xl p-5 shadow-xs border transition-all ${
-      isPast ? 'opacity-65 bg-slate-50/70 border-dashed border-slate-300' : (isRelieved ? 'bg-slate-50/60 border-slate-200/80' : 'border-slate-200/90')
-    }`;
+    card.className = getMonthCardClass(isPast, isCurrent, isRelieved);
 
     if (isOff) {
       card.innerHTML = `
         <div class="flex items-center justify-between">
-          <div class="flex items-center gap-3">
+          <div class="flex items-center flex-wrap gap-2.5">
             <span class="text-base font-bold text-slate-900">${month}</span>
             <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-500 border border-slate-200">Off Month</span>
+            ${renderCurrentBadge(isCurrent)}
           </div>
           ${isPast ? '<span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-100 px-2 py-0.5 rounded">PAST</span>' : ''}
         </div>`;
@@ -454,9 +608,10 @@ function renderHighCouncilView(container) {
       card.innerHTML = `
         <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3">
           <div class="space-y-1">
-            <div class="flex items-center flex-wrap gap-2.5">
+            <div class="flex items-center flex-wrap gap-2">
               <span class="text-base font-extrabold text-slate-900">${month}</span>
-              <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200/70 shadow-2xs">
+              ${renderCurrentBadge(isCurrent)}
+              <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200/70 shadow-sm">
                 ${wardInfo.time || '10:00 AM'}
               </span>
               ${statusBadge}
@@ -466,11 +621,7 @@ function renderHighCouncilView(container) {
               <span class="font-bold text-slate-900">${escapeHTML(wardInfo.name)}</span>
               ${wardInfo.building ? `<span class="text-slate-400 text-xs font-medium">(${escapeHTML(wardInfo.building)})</span>` : ''}
             </div>
-            ${wardInfo.address ? `
-              <div class="flex items-center gap-1.5 text-xs text-slate-500">
-                <svg class="w-3.5 h-3.5 text-rose-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                <span>${escapeHTML(wardInfo.address)}</span>
-              </div>` : ''}
+            ${renderLocationLine(wardInfo)}
             ${renderOverrideBanner(notesList)}
           </div>
 
@@ -480,8 +631,8 @@ function renderHighCouncilView(container) {
           </div>
         </div>
 
-        <!-- Stake Theme & Talks Drawer -->
-        ${renderThemeDrawer(month)}
+        <!-- Stake Theme & Collapsible Talks Drawer -->
+        ${renderThemeDrawer(month, { defaultOpen: isCurrent })}
       `;
     }
 
@@ -489,11 +640,11 @@ function renderHighCouncilView(container) {
   });
 
   if (renderedCount === 0) {
-    renderEmptyState(container, 'No assignments found matching the current filters. Try enabling "Show Past Months" or "Show Off Months".');
+    renderEmptyState(container, 'No assignments found matching the current filters. Try enabling "Past Months" or "Off Months".');
   }
 }
 
-// Companion Individual View (NO Theme & Talks + Override Strike-Throughs)
+// Companion Individual View (Includes Theme & Collapsible Talks + Override Strike-Throughs)
 function renderCompanionIndividualView(container) {
   const roleKey = currentSelection;
   const personName = COMPANION_ROLES[roleKey] || '';
@@ -501,6 +652,7 @@ function renderCompanionIndividualView(container) {
 
   MONTHS.forEach(month => {
     const isPast = isMonthPast(month);
+    const isCurrent = isCurrentMonth(month);
     if (isPast && !showPastMonths) return;
 
     let matchedWard = null;
@@ -531,16 +683,15 @@ function renderCompanionIndividualView(container) {
     const wardInfo = matchedWard ? getWardInfo(matchedWard) : null;
 
     const card = document.createElement('div');
-    card.className = `bg-white rounded-2xl p-5 shadow-xs border transition-all ${
-      isPast ? 'opacity-65 bg-slate-50/70 border-dashed border-slate-300' : (isRelieved ? 'bg-slate-50/60 border-slate-200/80' : 'border-slate-200/90')
-    }`;
+    card.className = getMonthCardClass(isPast, isCurrent, isRelieved);
 
     if (isOff) {
       card.innerHTML = `
         <div class="flex items-center justify-between">
-          <div class="flex items-center gap-3">
+          <div class="flex items-center flex-wrap gap-2.5">
             <span class="text-base font-bold text-slate-900">${month}</span>
             <span class="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-500 border border-slate-200">Off Month</span>
+            ${renderCurrentBadge(isCurrent)}
           </div>
           ${isPast ? '<span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-100 px-2 py-0.5 rounded">PAST</span>' : ''}
         </div>`;
@@ -572,11 +723,12 @@ function renderCompanionIndividualView(container) {
       ];
 
       card.innerHTML = `
-        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-3">
           <div class="space-y-1">
-            <div class="flex items-center flex-wrap gap-2.5">
+            <div class="flex items-center flex-wrap gap-2">
               <span class="text-base font-extrabold text-slate-900">${month}</span>
-              <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200/70 shadow-2xs">
+              ${renderCurrentBadge(isCurrent)}
+              <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200/70 shadow-sm">
                 ${wardInfo.time || '10:00 AM'}
               </span>
               ${statusBadge}
@@ -586,11 +738,7 @@ function renderCompanionIndividualView(container) {
               <span class="font-bold text-slate-900">${escapeHTML(wardInfo.name)}</span>
               ${wardInfo.building ? `<span class="text-slate-400 text-xs font-medium">(${escapeHTML(wardInfo.building)})</span>` : ''}
             </div>
-            ${wardInfo.address ? `
-              <div class="flex items-center gap-1.5 text-xs text-slate-500">
-                <svg class="w-3.5 h-3.5 text-rose-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                <span>${escapeHTML(wardInfo.address)}</span>
-              </div>` : ''}
+            ${renderLocationLine(wardInfo)}
             ${renderOverrideBanner(notesList)}
           </div>
 
@@ -599,6 +747,9 @@ function renderCompanionIndividualView(container) {
             ${hcDisplay}
           </div>
         </div>
+
+        <!-- Stake Theme & Collapsible Talks Drawer -->
+        ${renderThemeDrawer(month, { defaultOpen: isCurrent })}
       `;
     }
 
@@ -606,11 +757,11 @@ function renderCompanionIndividualView(container) {
   });
 
   if (renderedCount === 0) {
-    renderEmptyState(container, 'No assignments found matching the current filters. Try enabling "Show Past Months" or "Show Off Months".');
+    renderEmptyState(container, 'No assignments found matching the current filters. Try enabling "Past Months" or "Off Months".');
   }
 }
 
-// Companion Organization View (Grid for Swapping - NO Theme/Talks)
+// Companion Organization View (Grid for Swapping + Theme & Collapsible Talks)
 function renderCompanionOrgView(container) {
   const orgMeta = ORG_DEFINITIONS[currentSelection];
   if (!orgMeta) return;
@@ -619,6 +770,7 @@ function renderCompanionOrgView(container) {
 
   MONTHS.forEach(month => {
     const isPast = isMonthPast(month);
+    const isCurrent = isCurrentMonth(month);
     if (isPast && !showPastMonths) return;
 
     const assignments = [];
@@ -647,9 +799,7 @@ function renderCompanionOrgView(container) {
     renderedCount++;
 
     const card = document.createElement('div');
-    card.className = `bg-white rounded-2xl p-5 shadow-xs border transition-all ${
-      isPast ? 'opacity-65 bg-slate-50/70 border-dashed border-slate-300' : 'border-slate-200/90'
-    }`;
+    card.className = getMonthCardClass(isPast, isCurrent);
 
     let assignmentsHtml = '';
     if (assignments.length === 0) {
@@ -657,7 +807,7 @@ function renderCompanionOrgView(container) {
         <div class="py-2 text-xs text-slate-400 italic">No organization members scheduled this month.</div>`;
     } else {
       assignmentsHtml = `
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2.5 pb-3">
           ${assignments.map(a => `
             <div class="bg-slate-50/80 rounded-xl p-3 border ${a.isOverridden ? 'border-amber-300 bg-amber-50/30' : 'border-slate-200/80'} space-y-1.5">
               <div class="flex items-center justify-between gap-2">
@@ -673,9 +823,14 @@ function renderCompanionOrgView(container) {
               ` : `
                 <div class="font-extrabold text-sm text-slate-900">${escapeHTML(a.name)}</div>
               `}
-              <div class="text-xs text-slate-700 font-medium">
-                📍 ${escapeHTML(a.wardInfo.name)} <span class="text-slate-400">(${escapeHTML(a.wardInfo.building)})</span>
+              <div class="flex items-center gap-1.5 text-xs text-slate-700 font-medium">
+                ${MAP_PIN_SVG}
+                <span class="min-w-0">
+                  ${escapeHTML(a.wardInfo.name)}
+                  ${a.wardInfo.building ? `<span class="text-slate-400 font-normal">(${escapeHTML(a.wardInfo.building)})</span>` : ''}
+                </span>
               </div>
+              ${a.wardInfo.address ? `<div class="text-[11px] text-slate-500 pl-5">${renderMapLink(a.wardInfo.address)}</div>` : ''}
               ${a.note ? `<div class="text-[11px] text-amber-800 font-medium">Note: ${escapeHTML(a.note)}</div>` : ''}
               <div class="text-[11px] text-slate-500 pt-1 border-t border-slate-200/60">
                 High Councilor: <strong class="text-slate-800">${escapeHTML(a.hcSpeaker) || 'Unassigned'}</strong>
@@ -687,20 +842,22 @@ function renderCompanionOrgView(container) {
 
     card.innerHTML = `
       <div class="flex items-center justify-between border-b border-slate-100 pb-2">
-        <div class="flex items-center gap-2">
+        <div class="flex items-center flex-wrap gap-2">
           <span class="text-base font-extrabold text-slate-900">${month}</span>
+          ${renderCurrentBadge(isCurrent)}
           ${assignments.length > 0 ? `<span class="px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">${assignments.length} Speaking</span>` : ''}
         </div>
         ${isPast ? '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold tracking-wider bg-slate-100 text-slate-500 border border-slate-200">PAST</span>' : ''}
       </div>
       ${assignmentsHtml}
+      ${assignments.length > 0 ? renderThemeDrawer(month, { defaultOpen: false }) : ''}
     `;
 
     container.appendChild(card);
   });
 
   if (renderedCount === 0) {
-    renderEmptyState(container, 'No organization assignments in this range. Try enabling "Show Past Months".');
+    renderEmptyState(container, 'No organization assignments in this range. Try enabling "Past Months".');
   }
 }
 
@@ -712,6 +869,7 @@ function renderWardView(container) {
 
   MONTHS.forEach(month => {
     const isPast = isMonthPast(month);
+    const isCurrent = isCurrentMonth(month);
     if (isPast && !showPastMonths) return;
     renderedCount++;
 
@@ -723,24 +881,21 @@ function renderWardView(container) {
     ];
 
     const card = document.createElement('div');
-    card.className = `bg-white rounded-2xl p-5 shadow-xs border transition-all ${
-      isPast ? 'opacity-65 bg-slate-50/70 border-dashed border-slate-300' : 'border-slate-200/90'
-    }`;
+    card.className = getMonthCardClass(isPast, isCurrent);
 
     card.innerHTML = `
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3">
         <div class="space-y-1">
-          <div class="flex items-center gap-2.5">
+          <div class="flex items-center flex-wrap gap-2">
             <span class="text-base font-extrabold text-slate-900">${month}</span>
-            <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200/70">
+            ${renderCurrentBadge(isCurrent)}
+            <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200/70 shadow-sm">
               ${wardInfo.time || '10:00 AM'}
             </span>
             ${(eff.hcOverridden || eff.compOverridden || eff.generalNotes.length > 0) ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">Updated</span>' : ''}
             ${isPast ? '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold tracking-wider bg-slate-100 text-slate-500 border border-slate-200">PAST</span>' : ''}
           </div>
-          <div class="text-xs text-slate-500">
-            ${escapeHTML(wardInfo.building)} • ${escapeHTML(wardInfo.address)}
-          </div>
+          ${renderLocationLine(wardInfo, { includeBuilding: true })}
           ${renderOverrideBanner(notesList)}
         </div>
 
@@ -759,14 +914,14 @@ function renderWardView(container) {
         </div>
       </div>
 
-      ${renderThemeDrawer(month)}
+      ${renderThemeDrawer(month, { defaultOpen: isCurrent })}
     `;
 
     container.appendChild(card);
   });
 
   if (renderedCount === 0) {
-    renderEmptyState(container, 'All months for this ward are in the past. Enable "Show Past Months" to view them.');
+    renderEmptyState(container, 'All months for this ward are in the past. Enable "Past Months" to view them.');
   }
 }
 
@@ -775,12 +930,14 @@ function renderMonthView(container) {
   const selectedMonth = currentSelection;
   const themeData = THEMES[selectedMonth] || { theme: '', talks: [] };
   const isPast = isMonthPast(selectedMonth);
+  const isCurrent = isCurrentMonth(selectedMonth);
 
   const themeBanner = document.createElement('div');
   themeBanner.className = 'bg-gradient-to-br from-indigo-950 via-slate-900 to-indigo-900 text-white rounded-2xl p-6 shadow-md border border-slate-800 space-y-4';
   themeBanner.innerHTML = `
     <div class="flex items-center justify-between flex-wrap gap-2">
       <span class="text-xs font-extrabold tracking-wider uppercase text-sky-300">MONTHLY THEME & STUDY MATERIALS</span>
+      ${isCurrent ? '<span class="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold tracking-wider bg-indigo-500/40 text-indigo-100 border border-indigo-300/40">THIS MONTH</span>' : ''}
       ${isPast ? '<span class="px-2.5 py-0.5 rounded text-[10px] font-extrabold tracking-wider bg-white/10 text-sky-200 border border-white/20">PAST MONTH</span>' : ''}
     </div>
     <h2 class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight leading-snug drop-shadow-sm">
@@ -805,19 +962,17 @@ function renderMonthView(container) {
     ];
 
     const item = document.createElement('div');
-    item.className = 'bg-white rounded-2xl p-4 sm:p-5 shadow-xs border border-slate-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-4';
+    item.className = 'bg-white rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-4';
     item.innerHTML = `
       <div class="space-y-1">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="font-extrabold text-base text-slate-900">${escapeHTML(w.name)}</span>
-          <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200/70">
+          <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200/70 shadow-sm">
             ${w.time || '10:00 AM'}
           </span>
           ${(eff.hcOverridden || eff.compOverridden || eff.generalNotes.length > 0) ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">Swapped / Updated</span>' : ''}
         </div>
-        <div class="text-xs text-slate-500">
-          📍 ${escapeHTML(w.building)} • ${escapeHTML(w.address)}
-        </div>
+        ${renderLocationLine(w, { includeBuilding: true })}
         ${renderOverrideBanner(notesList)}
       </div>
 
@@ -1015,6 +1170,15 @@ function openGuidelinesModal() {
 function closeGuidelinesModal() {
   document.getElementById('guidelinesModal').classList.add('hidden');
 }
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const modal = document.getElementById('guidelinesModal');
+    if (modal && !modal.classList.contains('hidden')) {
+      closeGuidelinesModal();
+    }
+  }
+});
 
 function escapeHTML(str) {
   if (!str) return '';
@@ -1310,11 +1474,13 @@ async function syncGoogleSheetData() {
     }
 
     isDataLoaded = true;
+    applyTabChrome(currentTab);
     populateDropdown();
     renderCards();
+    saveState();
 
     if (badge) {
-      badge.className = 'inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/80 shadow-xs transition-all';
+      badge.className = 'inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/80 shadow-sm transition-all';
     }
     if (badgeText) badgeText.textContent = 'Live Google Sheet Connected';
     if (badgeDot) badgeDot.className = 'w-2 h-2 rounded-full bg-emerald-500';
@@ -1322,7 +1488,7 @@ async function syncGoogleSheetData() {
     console.error('Google Sheet sync error:', err);
     isDataLoaded = true;
     if (badge) {
-      badge.className = 'inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200/80 shadow-xs transition-all';
+      badge.className = 'inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200/80 shadow-sm transition-all';
     }
     if (badgeText) badgeText.textContent = 'Connection Error';
     if (badgeDot) badgeDot.className = 'w-2 h-2 rounded-full bg-rose-500';
@@ -1334,6 +1500,12 @@ async function syncGoogleSheetData() {
 // Application Initialization
 // -------------------------------------------------------------
 window.addEventListener('DOMContentLoaded', () => {
+  loadSavedState();
+  const pastToggle = document.getElementById('showPastMonthsToggle');
+  const offToggle = document.getElementById('showOffMonthsToggle');
+  if (pastToggle) pastToggle.checked = showPastMonths;
+  if (offToggle) offToggle.checked = showOffMonths;
+  applyTabChrome(currentTab);
   renderCards(); // Shows loading skeleton while empty
   syncGoogleSheetData();
 });

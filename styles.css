@@ -4,3 +4,12 @@ body {
 .pb-safe {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
+details.talks-drawer > summary {
+  list-style: none;
+}
+details.talks-drawer > summary::-webkit-details-marker {
+  display: none;
+}
+details.talks-drawer[open] .talks-chevron {
+  transform: rotate(180deg);
+}
