@@ -13,3 +13,22 @@ details.talks-drawer > summary::-webkit-details-marker {
 details.talks-drawer[open] .talks-chevron {
   transform: rotate(180deg);
 }
+
+@media print {
+  body {
+    background: #ffffff !important;
+    padding: 0 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .no-print,
+  #guidelinesModal,
+  #toast {
+    display: none !important;
+  }
+  #scheduleFeed > div {
+    break-inside: avoid;
+    page-break-inside: avoid;
+    box-shadow: none !important;
+  }
+}

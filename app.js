@@ -31,6 +31,7 @@ let isDataLoaded = false;
 // App State, Persistence & URL Sync
 // -------------------------------------------------------------
 const STORAGE_KEY = 'stakeScheduleState_v1';
+const DATA_CACHE_KEY = 'stakeScheduleDataCache_v1';
 const VALID_TABS = ['highCouncil', 'companion', 'ward', 'month'];
 
 let currentTab = 'highCouncil';
@@ -38,6 +39,72 @@ let currentSelection = '';
 let savedSelections = { highCouncil: '', companion: '', ward: '', month: '' };
 let showPastMonths = false;
 let showOffMonths = false;
+let isSyncing = false;
+let lastSyncError = false;
+let toastTimeoutId = null;
+
+function hasAnyScheduleData() {
+  return HIGH_COUNCIL.length > 0 || WARDS.length > 0 || Object.keys(COMPANION_ROLES).length > 0;
+}
+
+function loadCachedSheetData() {
+  try {
+    const raw = localStorage.getItem(DATA_CACHE_KEY);
+    if (!raw) return false;
+    const cached = JSON.parse(raw);
+    if (!cached || typeof cached !== 'object') return false;
+    if (Array.isArray(cached.HIGH_COUNCIL)) HIGH_COUNCIL = cached.HIGH_COUNCIL;
+    if (Array.isArray(cached.WARDS)) WARDS = cached.WARDS;
+    if (cached.COMPANION_ROLES && typeof cached.COMPANION_ROLES === 'object') COMPANION_ROLES = cached.COMPANION_ROLES;
+    if (cached.THEMES && typeof cached.THEMES === 'object') THEMES = cached.THEMES;
+    if (cached.HC_SCHEDULE_GRID && typeof cached.HC_SCHEDULE_GRID === 'object') HC_SCHEDULE_GRID = cached.HC_SCHEDULE_GRID;
+    if (cached.COMP_SCHEDULE_GRID && typeof cached.COMP_SCHEDULE_GRID === 'object') COMP_SCHEDULE_GRID = cached.COMP_SCHEDULE_GRID;
+    if (Array.isArray(cached.OVERRIDES)) OVERRIDES = cached.OVERRIDES;
+    return hasAnyScheduleData();
+  } catch (e) {
+    return false;
+  }
+}
+
+function saveCachedSheetData() {
+  try {
+    localStorage.setItem(DATA_CACHE_KEY, JSON.stringify({
+      savedAt: Date.now(),
+      HIGH_COUNCIL,
+      WARDS,
+      COMPANION_ROLES,
+      THEMES,
+      HC_SCHEDULE_GRID,
+      COMP_SCHEDULE_GRID,
+      OVERRIDES
+    }));
+  } catch (e) {
+    // Ignore storage quota/private mode errors
+  }
+}
+
+function setStatusBadge(variant, text) {
+  const badge = document.getElementById('statusBadge');
+  const badgeText = document.getElementById('statusText');
+  const badgeDot = document.getElementById('statusDot');
+  if (!badge || !badgeText || !badgeDot) return;
+
+  const base = 'inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold border shadow-sm transition-all cursor-pointer active:scale-95';
+  if (variant === 'loading') {
+    badge.className = `${base} bg-indigo-50 hover:bg-indigo-100/80 text-indigo-700 border-indigo-200/80`;
+    badgeDot.className = 'w-2 h-2 rounded-full bg-indigo-500 animate-pulse';
+  } else if (variant === 'live') {
+    badge.className = `${base} bg-emerald-50 hover:bg-emerald-100/80 text-emerald-700 border-emerald-200/80`;
+    badgeDot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+  } else if (variant === 'warn') {
+    badge.className = `${base} bg-amber-50 hover:bg-amber-100/80 text-amber-800 border-amber-200/80`;
+    badgeDot.className = 'w-2 h-2 rounded-full bg-amber-500';
+  } else {
+    badge.className = `${base} bg-rose-50 hover:bg-rose-100/80 text-rose-700 border-rose-200/80`;
+    badgeDot.className = 'w-2 h-2 rounded-full bg-rose-500';
+  }
+  badgeText.textContent = text;
+}
 
 function getWardInfo(wardName) {
   const found = WARDS.find(w => w.name.trim().toLowerCase() === (wardName || '').trim().toLowerCase());
@@ -413,6 +480,43 @@ function renderTalkLinks(talks, isDark = false) {
   return html;
 }
 
+function navigateToEntity(tabKey, targetValue) {
+  if (!VALID_TABS.includes(tabKey) || !targetValue) return;
+  savedSelections[tabKey] = targetValue;
+  switchTab(tabKey, { fromUser: true });
+}
+
+function renderEntityLink(label, tabKey, targetValue, extraClasses = '') {
+  if (!label) return '';
+  if (!targetValue) return `<span class="${extraClasses}">${escapeHTML(label)}</span>`;
+  return `<button type="button" data-nav-tab="${escapeHTML(tabKey)}" data-nav-value="${escapeHTML(targetValue)}" class="text-left hover:text-indigo-600 hover:underline decoration-indigo-300 underline-offset-2 transition-colors cursor-pointer ${extraClasses}">${escapeHTML(label)}</button>`;
+}
+
+function canNavigateToHighCouncil(name) {
+  if (!name) return false;
+  return HIGH_COUNCIL.some(hc => hc.name.toLowerCase() === name.toLowerCase());
+}
+
+function canNavigateToCompanionRole(role) {
+  if (!role) return false;
+  return Object.keys(COMPANION_ROLES).some(r => r.toLowerCase() === role.toLowerCase());
+}
+
+function canNavigateToWard(wardName) {
+  if (!wardName) return false;
+  return WARDS.some(w => w.name.toLowerCase() === wardName.toLowerCase());
+}
+
+function renderSummaryStrip(container, primaryText, secondaryText = '') {
+  const strip = document.createElement('div');
+  strip.className = 'flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-slate-500';
+  strip.innerHTML = `
+    <span class="font-semibold text-slate-600">${escapeHTML(primaryText)}</span>
+    ${secondaryText ? `<span class="text-slate-400 font-medium">${escapeHTML(secondaryText)}</span>` : ''}
+  `;
+  container.appendChild(strip);
+}
+
 const MAP_PIN_SVG = '<svg class="w-3.5 h-3.5 text-rose-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>';
 
 function renderMapLink(address, labelText = '') {
@@ -516,6 +620,19 @@ function renderCards() {
 
   container.innerHTML = '';
 
+  if (lastSyncError && !hasAnyScheduleData()) {
+    container.innerHTML = `
+      <div class="bg-white rounded-2xl p-10 text-center border border-rose-200 text-slate-600 space-y-3 shadow-sm">
+        <svg class="w-10 h-10 mx-auto text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        <p class="text-sm font-bold text-slate-800">Unable to load schedule from Google Sheets</p>
+        <p class="text-xs text-slate-500 max-w-sm mx-auto">Check your internet connection and try again.</p>
+        <button type="button" onclick="syncGoogleSheetData({ manual: true })" class="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 transition-all shadow-sm active:scale-95">
+          Try Again
+        </button>
+      </div>`;
+    return;
+  }
+
   if (currentTab === 'highCouncil') {
     renderHighCouncilView(container);
   } else if (currentTab === 'companion') {
@@ -535,6 +652,9 @@ function renderCards() {
 function renderHighCouncilView(container) {
   const speakerName = currentSelection;
   let renderedCount = 0;
+  let activeCount = 0;
+  let nextAssignment = null;
+  const fragment = document.createDocumentFragment();
 
   MONTHS.forEach(month => {
     const isPast = isMonthPast(month);
@@ -564,6 +684,12 @@ function renderHighCouncilView(container) {
     renderedCount++;
 
     const wardInfo = matchedWard ? getWardInfo(matchedWard) : null;
+    if (!isOff && !isRelieved) {
+      activeCount++;
+      if (!isPast && !nextAssignment) {
+        nextAssignment = { month, wardName: wardInfo.name, time: wardInfo.time || '10:00 AM' };
+      }
+    }
 
     const card = document.createElement('div');
     card.className = getMonthCardClass(isPast, isCurrent, isRelieved);
@@ -579,16 +705,19 @@ function renderHighCouncilView(container) {
           ${isPast ? '<span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-100 px-2 py-0.5 rounded">PAST</span>' : ''}
         </div>`;
     } else {
+      const compNavRole = canNavigateToCompanionRole(effective.compRole) ? effective.compRole : '';
       const companionDisplay = effective.compOverridden
         ? `
           <div class="flex flex-col md:items-end">
             <span class="text-xs text-slate-400 line-through">${escapeHTML(effective.origCompName || effective.origCompRole || 'None')}</span>
-            <span class="font-bold text-slate-900 text-sm">${escapeHTML(effective.compName || effective.compRole)}</span>
+            ${renderEntityLink(effective.compName || effective.compRole, 'companion', compNavRole, 'font-bold text-slate-900 text-sm')}
             <span class="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded mt-0.5">Companion Sub</span>
           </div>`
         : (effective.compRole ? `
-          <div class="font-bold text-slate-900 text-sm">${escapeHTML(effective.compName || effective.compRole)}</div>
-          <div class="text-xs text-slate-500 font-medium">${escapeHTML(effective.compRole)}</div>
+          <div class="md:flex md:flex-col md:items-end">
+            ${renderEntityLink(effective.compName || effective.compRole, 'companion', compNavRole, 'font-bold text-slate-900 text-sm')}
+            <div class="text-xs text-slate-500 font-medium">${escapeHTML(effective.compRole)}</div>
+          </div>
         ` : `
           <div class="text-xs text-slate-400 italic">No companion (Speaks individually)</div>
         `);
@@ -618,7 +747,7 @@ function renderHighCouncilView(container) {
               ${isPast ? '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold tracking-wider bg-slate-100 text-slate-500 border border-slate-200">PAST</span>' : ''}
             </div>
             <div class="flex items-center flex-wrap gap-x-2 text-sm">
-              <span class="font-bold text-slate-900">${escapeHTML(wardInfo.name)}</span>
+              ${renderEntityLink(wardInfo.name, 'ward', canNavigateToWard(wardInfo.name) ? wardInfo.name : '', 'font-bold text-slate-900')}
               ${wardInfo.building ? `<span class="text-slate-400 text-xs font-medium">(${escapeHTML(wardInfo.building)})</span>` : ''}
             </div>
             ${renderLocationLine(wardInfo)}
@@ -636,12 +765,18 @@ function renderHighCouncilView(container) {
       `;
     }
 
-    container.appendChild(card);
+    fragment.appendChild(card);
   });
 
   if (renderedCount === 0) {
     renderEmptyState(container, 'No assignments found matching the current filters. Try enabling "Past Months" or "Off Months".');
+    return;
   }
+
+  const countLabel = `${activeCount} ${showPastMonths ? 'total' : 'upcoming'} assignment${activeCount === 1 ? '' : 's'}`;
+  const nextLabel = nextAssignment ? `Next: ${nextAssignment.month} — ${nextAssignment.wardName} (${nextAssignment.time})` : '';
+  renderSummaryStrip(container, countLabel, nextLabel);
+  container.appendChild(fragment);
 }
 
 // Companion Individual View (Includes Theme & Collapsible Talks + Override Strike-Throughs)
@@ -649,6 +784,9 @@ function renderCompanionIndividualView(container) {
   const roleKey = currentSelection;
   const personName = COMPANION_ROLES[roleKey] || '';
   let renderedCount = 0;
+  let activeCount = 0;
+  let nextAssignment = null;
+  const fragment = document.createDocumentFragment();
 
   MONTHS.forEach(month => {
     const isPast = isMonthPast(month);
@@ -681,6 +819,12 @@ function renderCompanionIndividualView(container) {
     renderedCount++;
 
     const wardInfo = matchedWard ? getWardInfo(matchedWard) : null;
+    if (!isOff && !isRelieved) {
+      activeCount++;
+      if (!isPast && !nextAssignment) {
+        nextAssignment = { month, wardName: wardInfo.name, time: wardInfo.time || '10:00 AM' };
+      }
+    }
 
     const card = document.createElement('div');
     card.className = getMonthCardClass(isPast, isCurrent, isRelieved);
@@ -696,16 +840,19 @@ function renderCompanionIndividualView(container) {
           ${isPast ? '<span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-100 px-2 py-0.5 rounded">PAST</span>' : ''}
         </div>`;
     } else {
+      const hcNav = canNavigateToHighCouncil(effective.hc) ? effective.hc : '';
       const hcDisplay = effective.hcOverridden
         ? `
           <div class="flex flex-col md:items-end">
             <span class="text-xs text-slate-400 line-through">${escapeHTML(effective.origHC || 'Unassigned')}</span>
-            <span class="font-bold text-slate-900 text-sm">${escapeHTML(effective.hc)}</span>
+            ${renderEntityLink(effective.hc, 'highCouncil', hcNav, 'font-bold text-slate-900 text-sm')}
             <span class="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded mt-0.5">HC Sub</span>
           </div>`
         : (effective.hc ? `
-          <div class="font-bold text-slate-900 text-sm">${escapeHTML(effective.hc)}</div>
-          <div class="text-xs text-slate-500 font-medium">High Council</div>
+          <div class="md:flex md:flex-col md:items-end">
+            ${renderEntityLink(effective.hc, 'highCouncil', hcNav, 'font-bold text-slate-900 text-sm')}
+            <div class="text-xs text-slate-500 font-medium">High Council</div>
+          </div>
         ` : `
           <div class="text-xs text-slate-400 italic">Unassigned High Councilor</div>
         `);
@@ -735,7 +882,7 @@ function renderCompanionIndividualView(container) {
               ${isPast ? '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold tracking-wider bg-slate-100 text-slate-500 border border-slate-200">PAST</span>' : ''}
             </div>
             <div class="flex items-center flex-wrap gap-x-2 text-sm">
-              <span class="font-bold text-slate-900">${escapeHTML(wardInfo.name)}</span>
+              ${renderEntityLink(wardInfo.name, 'ward', canNavigateToWard(wardInfo.name) ? wardInfo.name : '', 'font-bold text-slate-900')}
               ${wardInfo.building ? `<span class="text-slate-400 text-xs font-medium">(${escapeHTML(wardInfo.building)})</span>` : ''}
             </div>
             ${renderLocationLine(wardInfo)}
@@ -753,12 +900,18 @@ function renderCompanionIndividualView(container) {
       `;
     }
 
-    container.appendChild(card);
+    fragment.appendChild(card);
   });
 
   if (renderedCount === 0) {
     renderEmptyState(container, 'No assignments found matching the current filters. Try enabling "Past Months" or "Off Months".');
+    return;
   }
+
+  const countLabel = `${activeCount} ${showPastMonths ? 'total' : 'upcoming'} assignment${activeCount === 1 ? '' : 's'}`;
+  const nextLabel = nextAssignment ? `Next: ${nextAssignment.month} — ${nextAssignment.wardName} (${nextAssignment.time})` : '';
+  renderSummaryStrip(container, countLabel, nextLabel);
+  container.appendChild(fragment);
 }
 
 // Companion Organization View (Grid for Swapping + Theme & Collapsible Talks)
@@ -767,6 +920,8 @@ function renderCompanionOrgView(container) {
   if (!orgMeta) return;
 
   let renderedCount = 0;
+  let totalSpeakers = 0;
+  const fragment = document.createDocumentFragment();
 
   MONTHS.forEach(month => {
     const isPast = isMonthPast(month);
@@ -797,6 +952,7 @@ function renderCompanionOrgView(container) {
 
     if (assignments.length === 0 && !showOffMonths) return;
     renderedCount++;
+    totalSpeakers += assignments.length;
 
     const card = document.createElement('div');
     card.className = getMonthCardClass(isPast, isCurrent);
@@ -817,23 +973,23 @@ function renderCompanionOrgView(container) {
               ${a.isOverridden ? `
                 <div class="text-xs text-slate-400 line-through">${escapeHTML(a.origName)} (${escapeHTML(a.origRole)})</div>
                 <div class="font-extrabold text-sm text-slate-900 flex items-center gap-1.5">
-                  <span>${escapeHTML(a.name)}</span>
+                  ${renderEntityLink(a.name, 'companion', canNavigateToCompanionRole(a.role) ? a.role : '', 'font-extrabold text-sm text-slate-900')}
                   <span class="text-[10px] font-bold bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">Swapped</span>
                 </div>
               ` : `
-                <div class="font-extrabold text-sm text-slate-900">${escapeHTML(a.name)}</div>
+                <div>${renderEntityLink(a.name, 'companion', canNavigateToCompanionRole(a.role) ? a.role : '', 'font-extrabold text-sm text-slate-900')}</div>
               `}
               <div class="flex items-center gap-1.5 text-xs text-slate-700 font-medium">
                 ${MAP_PIN_SVG}
                 <span class="min-w-0">
-                  ${escapeHTML(a.wardInfo.name)}
+                  ${renderEntityLink(a.wardInfo.name, 'ward', canNavigateToWard(a.wardInfo.name) ? a.wardInfo.name : '', 'font-medium text-slate-700')}
                   ${a.wardInfo.building ? `<span class="text-slate-400 font-normal">(${escapeHTML(a.wardInfo.building)})</span>` : ''}
                 </span>
               </div>
               ${a.wardInfo.address ? `<div class="text-[11px] text-slate-500 pl-5">${renderMapLink(a.wardInfo.address)}</div>` : ''}
               ${a.note ? `<div class="text-[11px] text-amber-800 font-medium">Note: ${escapeHTML(a.note)}</div>` : ''}
               <div class="text-[11px] text-slate-500 pt-1 border-t border-slate-200/60">
-                High Councilor: <strong class="text-slate-800">${escapeHTML(a.hcSpeaker) || 'Unassigned'}</strong>
+                High Councilor: ${a.hcSpeaker ? renderEntityLink(a.hcSpeaker, 'highCouncil', canNavigateToHighCouncil(a.hcSpeaker) ? a.hcSpeaker : '', 'font-bold text-slate-800') : '<strong class="text-slate-800">Unassigned</strong>'}
               </div>
             </div>
           `).join('')}
@@ -853,12 +1009,16 @@ function renderCompanionOrgView(container) {
       ${assignments.length > 0 ? renderThemeDrawer(month, { defaultOpen: false }) : ''}
     `;
 
-    container.appendChild(card);
+    fragment.appendChild(card);
   });
 
   if (renderedCount === 0) {
     renderEmptyState(container, 'No organization assignments in this range. Try enabling "Past Months".');
+    return;
   }
+
+  renderSummaryStrip(container, `${totalSpeakers} ${showPastMonths ? 'total' : 'upcoming'} speaking assignment${totalSpeakers === 1 ? '' : 's'} across ${orgMeta.name}`);
+  container.appendChild(fragment);
 }
 
 // Ward View
@@ -866,6 +1026,7 @@ function renderWardView(container) {
   const wardName = currentSelection;
   const wardInfo = getWardInfo(wardName);
   let renderedCount = 0;
+  const fragment = document.createDocumentFragment();
 
   MONTHS.forEach(month => {
     const isPast = isMonthPast(month);
@@ -903,13 +1064,13 @@ function renderWardView(container) {
           <div>
             <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">HIGH COUNCIL</span>
             ${eff.hcOverridden ? `<span class="text-xs text-slate-400 line-through block">${escapeHTML(eff.origHC || 'None')}</span>` : ''}
-            <span class="font-bold text-slate-900 text-sm block">${escapeHTML(eff.hc) || 'None'}</span>
+            ${eff.hc ? renderEntityLink(eff.hc, 'highCouncil', canNavigateToHighCouncil(eff.hc) ? eff.hc : '', 'font-bold text-slate-900 text-sm') : '<span class="font-bold text-slate-900 text-sm block">None</span>'}
           </div>
           <div>
             <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">COMPANION</span>
             ${eff.compOverridden ? `<span class="text-xs text-slate-400 line-through block">${escapeHTML(eff.origCompName || 'None')}</span>` : ''}
-            <span class="font-bold text-slate-900 text-sm block">${escapeHTML(eff.compName) || 'None'}</span>
-            ${eff.compRole && eff.compRole !== eff.compName ? `<span class="text-[11px] text-slate-500 font-medium">(${escapeHTML(eff.compRole)})</span>` : ''}
+            ${eff.compName ? renderEntityLink(eff.compName, 'companion', canNavigateToCompanionRole(eff.compRole) ? eff.compRole : '', 'font-bold text-slate-900 text-sm') : '<span class="font-bold text-slate-900 text-sm block">None</span>'}
+            ${eff.compRole && eff.compRole !== eff.compName ? `<span class="text-[11px] text-slate-500 font-medium block">(${escapeHTML(eff.compRole)})</span>` : ''}
           </div>
         </div>
       </div>
@@ -917,12 +1078,16 @@ function renderWardView(container) {
       ${renderThemeDrawer(month, { defaultOpen: isCurrent })}
     `;
 
-    container.appendChild(card);
+    fragment.appendChild(card);
   });
 
   if (renderedCount === 0) {
     renderEmptyState(container, 'All months for this ward are in the past. Enable "Past Months" to view them.');
+    return;
   }
+
+  renderSummaryStrip(container, `${renderedCount} ${showPastMonths ? 'total' : 'upcoming'} month${renderedCount === 1 ? '' : 's'} for ${wardInfo.name}`, wardInfo.time ? `Sacrament Meeting: ${wardInfo.time}` : '');
+  container.appendChild(fragment);
 }
 
 // Month View (Dark Hero Theme Banner + Units Grid)
@@ -950,8 +1115,10 @@ function renderMonthView(container) {
   `;
   container.appendChild(themeBanner);
 
+  renderSummaryStrip(container, `${WARDS.length} unit${WARDS.length === 1 ? '' : 's'} scheduled for ${selectedMonth}`, 'Tap any ward or speaker to view their full schedule');
+
   const unitsGrid = document.createElement('div');
-  unitsGrid.className = 'space-y-3 pt-2';
+  unitsGrid.className = 'space-y-3';
 
   WARDS.forEach(w => {
     const eff = getEffectiveAssignment(w.name, selectedMonth);
@@ -966,7 +1133,7 @@ function renderMonthView(container) {
     item.innerHTML = `
       <div class="space-y-1">
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="font-extrabold text-base text-slate-900">${escapeHTML(w.name)}</span>
+          ${renderEntityLink(w.name, 'ward', canNavigateToWard(w.name) ? w.name : '', 'font-extrabold text-base text-slate-900')}
           <span class="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-50 text-purple-700 border border-purple-200/70 shadow-sm">
             ${w.time || '10:00 AM'}
           </span>
@@ -980,13 +1147,13 @@ function renderMonthView(container) {
         <div class="min-w-[120px]">
           <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">HIGH COUNCIL</span>
           ${eff.hcOverridden ? `<span class="text-xs text-slate-400 line-through block">${escapeHTML(eff.origHC || 'None')}</span>` : ''}
-          <span class="font-bold text-slate-900 text-sm block">${escapeHTML(eff.hc) || 'Unassigned'}</span>
+          ${eff.hc ? renderEntityLink(eff.hc, 'highCouncil', canNavigateToHighCouncil(eff.hc) ? eff.hc : '', 'font-bold text-slate-900 text-sm') : '<span class="font-bold text-slate-900 text-sm block">Unassigned</span>'}
         </div>
         <div class="min-w-[120px]">
           <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">COMPANION</span>
           ${eff.compOverridden ? `<span class="text-xs text-slate-400 line-through block">${escapeHTML(eff.origCompName || 'None')}</span>` : ''}
-          <span class="font-bold text-slate-900 text-sm block">${escapeHTML(eff.compName) || 'None'}</span>
-          ${eff.compRole && eff.compRole !== eff.compName ? `<span class="text-[10px] text-slate-500 font-medium">(${escapeHTML(eff.compRole)})</span>` : ''}
+          ${eff.compName ? renderEntityLink(eff.compName, 'companion', canNavigateToCompanionRole(eff.compRole) ? eff.compRole : '', 'font-bold text-slate-900 text-sm') : '<span class="font-bold text-slate-900 text-sm block">None</span>'}
+          ${eff.compRole && eff.compRole !== eff.compName ? `<span class="text-[10px] text-slate-500 font-medium block">(${escapeHTML(eff.compRole)})</span>` : ''}
         </div>
       </div>
     `;
@@ -1053,14 +1220,13 @@ function copyScheduleToClipboard() {
         const isPast = isMonthPast(m);
         if (isPast && !showPastMonths) return;
         const entries = [];
-        orgMeta.roles.forEach(role => {
-          Object.keys(COMP_SCHEDULE_GRID).forEach(wName => {
-            if (COMP_SCHEDULE_GRID[wName][m] === role) {
-              const ward = getWardInfo(wName);
-              const hc = HC_SCHEDULE_GRID[wName] ? HC_SCHEDULE_GRID[wName][m] : 'Unassigned';
-              entries.push(`  • ${role} (${COMPANION_ROLES[role] || role}) -> ${ward.name} at ${ward.time} (with ${hc})`);
-            }
-          });
+        Object.keys(COMP_SCHEDULE_GRID).forEach(wName => {
+          const eff = getEffectiveAssignment(wName, m);
+          if (orgMeta.roles.includes(eff.compRole) || orgMeta.roles.includes(eff.origCompRole)) {
+            const ward = getWardInfo(wName);
+            const swapTag = eff.compOverridden ? ` [Sub for ${eff.origCompName || eff.origCompRole}]` : '';
+            entries.push(`  • ${eff.compRole} (${eff.compName || eff.compRole})${swapTag} -> ${ward.name} at ${ward.time || '10:00 AM'} (with ${eff.hc || 'Unassigned'})`);
+          }
         });
         if (entries.length > 0) {
           lines.push(`${m}${isPast ? ' [Past]' : ''}:`);
@@ -1137,7 +1303,15 @@ function copyScheduleToClipboard() {
   showToast('Schedule text copied to clipboard!');
 }
 
-function copyToClipboardText(text) {
+async function copyToClipboardText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      // Fall back to execCommand below
+    }
+  }
   const ta = document.createElement('textarea');
   ta.value = text;
   ta.style.position = 'fixed';
@@ -1145,12 +1319,38 @@ function copyToClipboardText(text) {
   document.body.appendChild(ta);
   ta.focus();
   ta.select();
+  let ok = false;
   try {
-    document.execCommand('copy');
+    ok = document.execCommand('copy');
   } catch (err) {
     console.error('Copy failed', err);
   }
   document.body.removeChild(ta);
+  return ok;
+}
+
+async function shareCurrentView() {
+  syncUrlParams();
+  const shareUrl = window.location.href;
+  const select = document.getElementById('itemSelect');
+  const selectedLabel = select && select.selectedOptions && select.selectedOptions[0]
+    ? select.selectedOptions[0].textContent
+    : currentSelection;
+  const shareTitle = selectedLabel
+    ? `Stake Speaking Schedule — ${selectedLabel}`
+    : 'Stake Speaking Schedule';
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: shareTitle, url: shareUrl });
+      return;
+    } catch (err) {
+      if (err && err.name === 'AbortError') return;
+    }
+  }
+
+  await copyToClipboardText(shareUrl);
+  showToast('Share link copied to clipboard!');
 }
 
 function showToast(msg) {
@@ -1159,8 +1359,10 @@ function showToast(msg) {
   if (!toast || !text) return;
   text.textContent = msg;
   toast.classList.remove('-translate-y-24', 'sm:translate-y-24', 'opacity-0');
-  setTimeout(() => {
+  if (toastTimeoutId) clearTimeout(toastTimeoutId);
+  toastTimeoutId = setTimeout(() => {
     toast.classList.add('-translate-y-24', 'sm:translate-y-24', 'opacity-0');
+    toastTimeoutId = null;
   }, 2500);
 }
 
@@ -1262,34 +1464,65 @@ async function fetchPublishedTab(gid, sheetNames = []) {
   throw new Error(`Unable to fetch tab (GID: ${gid})`);
 }
 
-async function syncGoogleSheetData() {
-  const badge = document.getElementById('statusBadge');
-  const badgeText = document.getElementById('statusText');
-  const badgeDot = document.getElementById('statusDot');
+async function fetchOverridesTab() {
+  const gvizUrl = `https://docs.google.com/spreadsheets/d/${WEB_SOURCE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('Overrides')}`;
+  const res = await fetch(gvizUrl);
+  if (!res.ok) throw new Error('Overrides tab unavailable');
+  return await res.text();
+}
+
+async function syncGoogleSheetData({ manual = false } = {}) {
+  if (isSyncing) return;
+  isSyncing = true;
+
+  const hadExistingData = hasAnyScheduleData();
+  setStatusBadge('loading', hadExistingData ? 'Refreshing Schedule...' : 'Syncing Google Sheets...');
 
   try {
-    if (badgeText) badgeText.textContent = 'Syncing Google Sheets...';
+    const [
+      hcRosterRes,
+      wardsRes,
+      compRolesRes,
+      themesRes,
+      talksRes,
+      hcScheduleRes,
+      compScheduleRes,
+      overridesRes
+    ] = await Promise.allSettled([
+      fetchPublishedTab(TAB_GIDS.HC_ROSTER, ['High Council']),
+      fetchPublishedTab(TAB_GIDS.WARDS, ['Wards']),
+      fetchPublishedTab(TAB_GIDS.COMPANION_ROLES, ['Companion Speakers', 'Companion Roles']),
+      fetchPublishedTab(TAB_GIDS.THEMES, ['Themes']),
+      fetchPublishedTab(TAB_GIDS.TALKS, ['Talks']),
+      fetchPublishedTab(TAB_GIDS.HC_SCHEDULE, ['Schedule', 'High Council Schedule']),
+      fetchPublishedTab(TAB_GIDS.COMP_SCHEDULE, ['Companion Schedule']),
+      fetchOverridesTab()
+    ]);
 
-    // 1. Fetch High Council Roster (gid=0)
-    try {
-      const raw = await fetchPublishedTab(TAB_GIDS.HC_ROSTER, ['High Council']);
-      const rows = parseCSV(raw).slice(1);
+    let coreSuccessCount = 0;
+    const coreTotal = 7;
+
+    // 1. Parse High Council Roster
+    if (hcRosterRes.status === 'fulfilled') {
+      const rows = parseCSV(hcRosterRes.value).slice(1);
       const list = [];
       rows.forEach((r, idx) => {
         const name = r[1] ? r[1].trim() : (r[0] ? r[0].trim() : '');
         if (name && name.length < 35 && !name.toLowerCase().includes('speaking')) {
-          list.push({ id: idx + 1, name: name });
+          list.push({ id: idx + 1, name });
         }
       });
-      if (list.length > 0) HIGH_COUNCIL = list;
-    } catch (e) {
-      console.warn('High Council roster fallback warning:', e);
+      if (list.length > 0) {
+        HIGH_COUNCIL = list;
+        coreSuccessCount++;
+      }
+    } else {
+      console.warn('High Council roster warning:', hcRosterRes.reason);
     }
 
-    // 2. Fetch Wards directory (gid=1) - Single source of truth for times
-    try {
-      const raw = await fetchPublishedTab(TAB_GIDS.WARDS, ['Wards']);
-      const rows = parseCSV(raw).slice(1);
+    // 2. Parse Wards directory (single source of truth for times)
+    if (wardsRes.status === 'fulfilled') {
+      const rows = parseCSV(wardsRes.value).slice(1);
       const list = [];
       rows.forEach((r, idx) => {
         const name = r[1] || r[0];
@@ -1303,30 +1536,34 @@ async function syncGoogleSheetData() {
           });
         }
       });
-      if (list.length > 0) WARDS = list;
-    } catch (e) {
-      console.warn('Wards directory fallback warning:', e);
+      if (list.length > 0) {
+        WARDS = list;
+        coreSuccessCount++;
+      }
+    } else {
+      console.warn('Wards directory warning:', wardsRes.reason);
     }
 
-    // 3. Fetch Companion Roles
-    try {
-      const raw = await fetchPublishedTab(TAB_GIDS.COMPANION_ROLES, ['Companion Speakers', 'Companion Roles']);
-      const rows = parseCSV(raw).slice(1);
+    // 3. Parse Companion Roles
+    if (compRolesRes.status === 'fulfilled') {
+      const rows = parseCSV(compRolesRes.value).slice(1);
       const dict = {};
       rows.forEach(r => {
         const role = r[0] ? r[0].trim() : '';
         const name = r[1] ? r[1].trim() : '';
         if (role) dict[role] = name;
       });
-      if (Object.keys(dict).length > 0) COMPANION_ROLES = dict;
-    } catch (e) {
-      console.warn('Companion Roles tab fetch warning:', e);
+      if (Object.keys(dict).length > 0) {
+        COMPANION_ROLES = dict;
+        coreSuccessCount++;
+      }
+    } else {
+      console.warn('Companion Roles tab warning:', compRolesRes.reason);
     }
 
-    // 4. Fetch Themes & Talks (gid=2 & gid=3)
-    try {
-      const rawThemes = await fetchPublishedTab(TAB_GIDS.THEMES, ['Themes']);
-      const themeRows = parseCSV(rawThemes).slice(1);
+    // 4. Parse Themes & Talks
+    if (themesRes.status === 'fulfilled') {
+      const themeRows = parseCSV(themesRes.value).slice(1);
       themeRows.forEach(r => {
         const m = r[0] ? r[0].trim() : '';
         const t = r[1] ? r[1].trim() : '';
@@ -1335,13 +1572,13 @@ async function syncGoogleSheetData() {
           THEMES[m].theme = t;
         }
       });
-    } catch (e) {
-      console.warn('Themes fetch warning:', e);
+      coreSuccessCount++;
+    } else {
+      console.warn('Themes fetch warning:', themesRes.reason);
     }
 
-    try {
-      const rawTalks = await fetchPublishedTab(TAB_GIDS.TALKS, ['Talks']);
-      const talkRows = parseCSV(rawTalks).slice(1);
+    if (talksRes.status === 'fulfilled') {
+      const talkRows = parseCSV(talksRes.value).slice(1);
       const monthTalks = {};
       talkRows.forEach(r => {
         const m = r[0] ? r[0].trim() : '';
@@ -1357,14 +1594,14 @@ async function syncGoogleSheetData() {
         if (!THEMES[m]) THEMES[m] = { theme: '', talks: [] };
         THEMES[m].talks = monthTalks[m];
       });
-    } catch (e) {
-      console.warn('Talks fetch warning:', e);
+      coreSuccessCount++;
+    } else {
+      console.warn('Talks fetch warning:', talksRes.reason);
     }
 
-    // 5. Fetch High Council Schedule Grid (gid=208333913)
-    try {
-      const raw = await fetchPublishedTab(TAB_GIDS.HC_SCHEDULE, ['Schedule', 'High Council Schedule']);
-      const rows = parseCSV(raw);
+    // 5. Parse High Council Schedule Grid
+    if (hcScheduleRes.status === 'fulfilled') {
+      const rows = parseCSV(hcScheduleRes.value);
       if (rows.length > 1) {
         const header = rows[0].map(h => h.trim());
         const monthIndices = {};
@@ -1384,16 +1621,18 @@ async function syncGoogleSheetData() {
             }
           });
         });
-        if (Object.keys(newGrid).length > 0) HC_SCHEDULE_GRID = newGrid;
+        if (Object.keys(newGrid).length > 0) {
+          HC_SCHEDULE_GRID = newGrid;
+          coreSuccessCount++;
+        }
       }
-    } catch (e) {
-      console.warn('High Council schedule grid warning:', e);
+    } else {
+      console.warn('High Council schedule grid warning:', hcScheduleRes.reason);
     }
 
-    // 6. Fetch Companion Schedule Grid (gid=437508687)
-    try {
-      const raw = await fetchPublishedTab(TAB_GIDS.COMP_SCHEDULE, ['Companion Schedule']);
-      const rows = parseCSV(raw);
+    // 6. Parse Companion Schedule Grid (uses parsed WARDS above)
+    if (compScheduleRes.status === 'fulfilled') {
+      const rows = parseCSV(compScheduleRes.value);
       if (rows.length > 1) {
         const header = rows[0].map(h => h.trim());
         const monthIndices = {};
@@ -1402,7 +1641,6 @@ async function syncGoogleSheetData() {
           if (colIdx !== -1) monthIndices[m] = colIdx;
         });
 
-        // Dynamically locate Role and Name summary columns by header name
         const roleColIdx = header.findIndex(h => h.toLowerCase() === 'role');
         const nameColIdx = header.findIndex(h => h.toLowerCase() === 'name');
 
@@ -1418,7 +1656,6 @@ async function syncGoogleSheetData() {
             });
           }
 
-          // Capture Role -> Name mapping from summary columns on the right
           const rIdx = roleColIdx !== -1 ? roleColIdx : 13;
           const nIdx = nameColIdx !== -1 ? nameColIdx : 15;
           if (r[rIdx] && r[nIdx]) {
@@ -1429,70 +1666,83 @@ async function syncGoogleSheetData() {
             }
           }
         });
-        if (Object.keys(newGrid).length > 0) COMP_SCHEDULE_GRID = newGrid;
-      }
-    } catch (e) {
-      console.warn('Companion schedule grid warning:', e);
-    }
-
-    // 7. Fetch Overrides Tab (Optional - matches by sheet name 'Overrides')
-    try {
-      const gvizUrl = `https://docs.google.com/spreadsheets/d/${WEB_SOURCE_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent('Overrides')}`;
-      const res = await fetch(gvizUrl);
-      if (res.ok) {
-        const raw = await res.text();
-        const rows = parseCSV(raw);
-        if (rows.length > 1) {
-          const header = rows[0].map(h => h.trim().toLowerCase());
-          const mIdx = header.findIndex(h => h.includes('month'));
-          const wIdx = header.findIndex(h => h.includes('ward') || h.includes('unit'));
-          const tIdx = header.findIndex(h => h.includes('role') || h.includes('type'));
-          const rIdx = header.findIndex(h => h.includes('replacement') || h.includes('speaker') || h.includes('sub'));
-          const nIdx = header.findIndex(h => h.includes('note') || h.includes('reason'));
-
-          if (mIdx !== -1 && wIdx !== -1) {
-            const parsedOverrides = [];
-            rows.slice(1).forEach(r => {
-              const m = (r[mIdx] || '').trim();
-              const w = (r[wIdx] || '').trim();
-              if (m && w) {
-                parsedOverrides.push({
-                  month: m,
-                  ward: w,
-                  roleType: tIdx !== -1 ? (r[tIdx] || '').trim() : 'Companion',
-                  replacement: rIdx !== -1 ? (r[rIdx] || '').trim() : '',
-                  note: nIdx !== -1 ? (r[nIdx] || '').trim() : ''
-                });
-              }
-            });
-            OVERRIDES = parsedOverrides;
-          }
+        if (Object.keys(newGrid).length > 0) {
+          COMP_SCHEDULE_GRID = newGrid;
+          coreSuccessCount++;
         }
       }
-    } catch (e) {
-      // Overrides tab is optional; skip silently if not yet created
+    } else {
+      console.warn('Companion schedule grid warning:', compScheduleRes.reason);
+    }
+
+    // 7. Parse Overrides Tab (Optional)
+    if (overridesRes.status === 'fulfilled') {
+      const rows = parseCSV(overridesRes.value);
+      if (rows.length > 1) {
+        const header = rows[0].map(h => h.trim().toLowerCase());
+        const mIdx = header.findIndex(h => h.includes('month'));
+        const wIdx = header.findIndex(h => h.includes('ward') || h.includes('unit'));
+        const tIdx = header.findIndex(h => h.includes('role') || h.includes('type'));
+        const rIdx = header.findIndex(h => h.includes('replacement') || h.includes('speaker') || h.includes('sub'));
+        const nIdx = header.findIndex(h => h.includes('note') || h.includes('reason'));
+
+        if (mIdx !== -1 && wIdx !== -1) {
+          const parsedOverrides = [];
+          rows.slice(1).forEach(r => {
+            const m = (r[mIdx] || '').trim();
+            const w = (r[wIdx] || '').trim();
+            if (m && w) {
+              parsedOverrides.push({
+                month: m,
+                ward: w,
+                roleType: tIdx !== -1 ? (r[tIdx] || '').trim() : 'Companion',
+                replacement: rIdx !== -1 ? (r[rIdx] || '').trim() : '',
+                note: nIdx !== -1 ? (r[nIdx] || '').trim() : ''
+              });
+            }
+          });
+          OVERRIDES = parsedOverrides;
+        }
+      }
     }
 
     isDataLoaded = true;
+
+    if (coreSuccessCount === 0) {
+      lastSyncError = true;
+      if (hasAnyScheduleData()) {
+        setStatusBadge('warn', 'Offline · Showing Cached Schedule');
+        if (manual) showToast('Offline — showing cached schedule');
+      } else {
+        setStatusBadge('error', 'Connection Error · Tap to Retry');
+      }
+    } else {
+      lastSyncError = false;
+      saveCachedSheetData();
+      if (coreSuccessCount === coreTotal) {
+        setStatusBadge('live', 'Live Google Sheet Connected');
+      } else {
+        setStatusBadge('warn', 'Partially Synced · Tap to Refresh');
+      }
+      if (manual) showToast('Schedule refreshed from Google Sheets');
+    }
+
     applyTabChrome(currentTab);
     populateDropdown();
     renderCards();
     saveState();
-
-    if (badge) {
-      badge.className = 'inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/80 shadow-sm transition-all';
-    }
-    if (badgeText) badgeText.textContent = 'Live Google Sheet Connected';
-    if (badgeDot) badgeDot.className = 'w-2 h-2 rounded-full bg-emerald-500';
   } catch (err) {
     console.error('Google Sheet sync error:', err);
     isDataLoaded = true;
-    if (badge) {
-      badge.className = 'inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200/80 shadow-sm transition-all';
+    lastSyncError = true;
+    if (hasAnyScheduleData()) {
+      setStatusBadge('warn', 'Offline · Showing Cached Schedule');
+    } else {
+      setStatusBadge('error', 'Connection Error · Tap to Retry');
     }
-    if (badgeText) badgeText.textContent = 'Connection Error';
-    if (badgeDot) badgeDot.className = 'w-2 h-2 rounded-full bg-rose-500';
     renderCards();
+  } finally {
+    isSyncing = false;
   }
 }
 
@@ -1506,6 +1756,24 @@ window.addEventListener('DOMContentLoaded', () => {
   if (pastToggle) pastToggle.checked = showPastMonths;
   if (offToggle) offToggle.checked = showOffMonths;
   applyTabChrome(currentTab);
-  renderCards(); // Shows loading skeleton while empty
+
+  // Delegated click handler for cross-tab entity navigation links
+  const feed = document.getElementById('scheduleFeed');
+  if (feed) {
+    feed.addEventListener('click', (e) => {
+      const target = e.target.closest('[data-nav-tab][data-nav-value]');
+      if (!target) return;
+      navigateToEntity(target.dataset.navTab, target.dataset.navValue);
+    });
+  }
+
+  // Hydrate immediately from local cache if available, then refresh in background
+  if (loadCachedSheetData()) {
+    isDataLoaded = true;
+    populateDropdown();
+    renderCards();
+  } else {
+    renderCards(); // Shows loading skeleton on first visit
+  }
   syncGoogleSheetData();
 });
